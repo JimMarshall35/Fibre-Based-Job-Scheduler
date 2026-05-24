@@ -1,20 +1,22 @@
 #include <cstddef>
 #include <new>
 #include <cassert>
+#include <array>
 
 template <typename T, std::size_t N>
 class ObjectPool {
 private:
-    union Slot {
+    struct Slot {
         T object;
         Slot* next;
     };
 
-    alignas(T) unsigned char storage[sizeof(Slot) * N];
+    
+    Slot storage[N];
     Slot* freeList = nullptr;
 
     Slot* slotAt(std::size_t i) {
-        return reinterpret_cast<Slot*>(storage) + i;
+        return &storage[i];
     }
 
 public:

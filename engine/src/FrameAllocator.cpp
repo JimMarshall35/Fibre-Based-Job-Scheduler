@@ -35,5 +35,11 @@ namespace FrameAllocator
         gAllocationSize = sizeBytes;
         gAllocation = new char[gAllocationSize];
     }
+
+    void DeInit()
+    {
+        gAllocationSize = 0;
+        delete[] gAllocation;
+    }
 }
 

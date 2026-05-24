@@ -1,5 +1,5 @@
+#include "JobScheduler.h"
 #include <atomic>
-#include "Fibre_x64_systemv.h"
 #include "FrameAllocator.h"
 #include "MPSCQueue.hpp"
 #include "CircularWSDeque.hpp"
@@ -15,9 +15,93 @@
 
 // LINUX SPECIFIC END
 
+#include <cstring>
+#include <stdio.h>
+#include <string>
+#include <sstream>
+#include <cstdarg>
 
+#define LOG_SCHEDULING 1
 namespace Jobs
 {
+
+    class CircularLogBuffer
+    {
+    public:
+        CircularLogBuffer(size_t size)
+            :m_pData(new char[size]),
+            m_nDataCapacity(size),
+            m_pWrite(m_pData)
+        {}
+        ~CircularLogBuffer()
+        {
+            delete[] m_pData;
+        }
+        void Write(const char* str)
+        {
+            char* pEnd = m_pData + m_nDataCapacity;
+            size_t len = strlen(str);
+            char* pWriteEnd = m_pWrite + len;
+            if(pWriteEnd > pEnd)
+            {
+                size_t excess = pWriteEnd - pEnd;
+                memcpy(m_pWrite, str, len - excess);
+                m_pWrite = m_pData;
+                memcpy(m_pWrite, str + len - excess, excess);
+                m_pWrite += excess;
+            }
+            else
+            {
+                memcpy(m_pWrite, str, len);
+                m_pWrite += len;
+            }
+            m_nSize += len;
+        }
+        void WriteToFile(const char* filePath)
+        {
+            FILE* pFile = fopen(filePath, "w+");
+            assert(pFile);
+            if(m_nSize <= m_nDataCapacity)
+            {
+                fwrite(m_pData, m_nSize, 1, pFile);
+            }
+            else
+            {
+                char* pEnd = m_pData + m_nDataCapacity;
+                size_t toEnd = pEnd - m_pWrite;
+                fwrite(m_pWrite, toEnd, 1, pFile);
+                size_t remainder = m_nDataCapacity - toEnd;
+                fwrite(m_pData, remainder, 1, pFile);
+            }
+            fclose(pFile);
+        }
+        void Writef(const char* fmt, ...)
+        {
+            va_list args;
+            va_start(args, fmt);
+            VWritef(fmt, args);
+            va_end(args);
+        }
+    private:
+        void VWritef(const char* pFmt, va_list args)
+        {
+            static char sBuf[1024];
+            int numChars = vsnprintf(sBuf,2048, pFmt, args);
+            sBuf[numChars++] = '\n';
+            sBuf[numChars] = '\0';
+            Write(sBuf);
+        }
+    private:
+        char* m_pData = nullptr;
+        size_t m_nDataCapacity = 0;
+        char* m_pWrite = nullptr;
+        size_t m_nSize = 0;
+
+    };
+
+
+    std::atomic<bool> gWorkersContinue;
+
 #if defined(__linux__)
 
     void PinThreadToCore(int core_id) 
@@ -45,35 +129,9 @@ namespace Jobs
         Fiber* waitListHead;
     };
 
-    struct Job
-    {
-        ExecuteFn execute;;
-        void* userData;
-
-        Counter* counter;
-
-        Job* next;
-    };
-
-    enum class JobPriority
-    {
-        High,
-        Medium,
-        Low
-    };
-
-    struct JobDecl
-    {
-        JobPriority priority;
-        Job job;
-    };
-
-    
-
     using JobQueue = mpsc_queue_t<Job>;
     using LocalJobQueue = deque::Worker<Fiber*>;
 
-    
     struct JobScheduler;
 
     enum class WorkerThreadState
@@ -88,7 +146,11 @@ namespace Jobs
     struct WorkerThread
     {
         WorkerThread(LocalJobQueue& q, deque::Stealer<Fiber*>& stealer, int coreID, struct JobScheduler* pSched)
-            : localQueue(std::move(q)), myStealer(std::move(stealer)), pScheduler(pSched), state(WorkerThreadState::Unstarted)
+            : localQueue(std::move(q)), 
+            myStealer(std::move(stealer)), 
+            pScheduler(pSched), 
+            state(WorkerThreadState::Unstarted),
+            logBuffer(1024 * 64)
         {
             pSchedulerFibre = fiberPool.allocate();
         }
@@ -112,6 +174,7 @@ namespace Jobs
         JobQueue mediumPriority;
         JobQueue lowPriority;
         WorkerThreadState state;
+        CircularLogBuffer logBuffer;
     };
 
     void JobWrapper(ExecuteFn execute, void* pUser, Counter* pCounter, WorkerThread* pThread)
@@ -137,25 +200,32 @@ namespace Jobs
     void ScheduleWorker(WorkerThread* pThread)
     {
         pThread->state = WorkerThreadState::Idle;
-        while (true)
+        while (gWorkersContinue.load())
         {
             auto job = pThread->localQueue.pop();
             Job j;
             bool bNewJobDequeued = false;
+            JobPriority prioritydequeued = JobPriority::Undefined; // only used for logging
             if(job != std::nullopt)
             {
+#ifdef LOG_SCHEDULING
+                pThread->logBuffer.Writef("(scheduling fiber) scheduling fibre %i from local queue", job.value()->id);
+#endif
                 FibreSwitch(&pThread->pSchedulerFibre->ctx, &job.value()->ctx);
             }
             else if (pThread->highPriority.dequeue(j))
             {
+                prioritydequeued = JobPriority::High;
                 bNewJobDequeued = true;
             }
             else if (pThread->mediumPriority.dequeue(j))
             {
+                prioritydequeued = JobPriority::Medium;
                 bNewJobDequeued = true;
             }
             else if (pThread->lowPriority.dequeue(j))
             {
+                prioritydequeued = JobPriority::Low;
                 bNewJobDequeued = true;
             }
             else
@@ -182,6 +252,14 @@ namespace Jobs
                 pThread->fiberPool.deallocate(pThread->pActiveJobFibre);
             }
         }
+#ifdef LOG_SCHEDULING
+        std::stringstream ss;
+        ss << "worker_thread_log_";
+        ss << pThread->coreID;
+        ss << ".txt";
+        auto s = ss.str();
+        pThread->logBuffer.WriteToFile(s.c_str());
+#endif
     }
 
     struct JobScheduler
@@ -193,6 +271,7 @@ namespace Jobs
 
     void InitScheduler()
     {
+        gWorkersContinue.store(true);
         auto concurr = std::thread::hardware_concurrency();
         int numWorkers = concurr - 2;
         gJobScheduler.workers.resize(numWorkers); /* game engine will use platform and render threads as well */
@@ -260,7 +339,6 @@ namespace Jobs
         }
     }
 
-
     Counter* RunJobs(struct JobDecl* pJobs, int numJobs)
     {
         auto pCounter = static_cast<Counter*>(FrameAllocator::Allocate(sizeof(Counter)));
@@ -273,7 +351,7 @@ namespace Jobs
         return pCounter;
     }
     
-    void WaitForCounter(WorkerThread* pThisThread, Counter* pCtr, int waitForVal=0)
+    void WaitForCounter(WorkerThread* pThisThread, Counter* pCtr)
     {
         /* 
             TODO: this is probably not thread safe, but it might be OK. 
@@ -284,8 +362,19 @@ namespace Jobs
             pThisThread->pActiveJobFibre->nextWaiter = pCtr->waitListHead;
         }
         pCtr->waitListHead = pThisThread->pActiveJobFibre;
+#ifdef LOG_SCHEDULING
+        pThisThread->logBuffer.Writef("Fiber [%i] waiting\n");
+#endif
         FibreSwitch(&pThisThread->pActiveJobFibre->ctx, &pThisThread->pSchedulerFibre->ctx);
     }
 
-
+    void KillScheduler()
+    {
+        gWorkersContinue.store(false);
+        for(auto w : gJobScheduler.workers)
+        {
+            w->thread.value().join();
+            delete w;
+        }
+    }
 };

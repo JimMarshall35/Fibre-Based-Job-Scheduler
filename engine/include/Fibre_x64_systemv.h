@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <cstddef>
 #define FiberStackSize (1024 * 64)
 
 struct Job;
@@ -33,17 +34,21 @@ struct FibreContext
 
 struct Fiber
 {
-    void* stack;
-    
+    size_t id;
+    char* stack;
     FibreContext ctx;
-
     Job* currentJob = nullptr;
-
     Fiber* nextWaiter = nullptr; // for wait list linking
-
     Fiber()
         :stack(new char[FiberStackSize])
-    {}
+    {
+        static size_t sId = 0;
+        id = sId++;
+    }
+    ~Fiber()
+    {
+        delete[] stack;
+    }
 };
 
 extern "C" {
