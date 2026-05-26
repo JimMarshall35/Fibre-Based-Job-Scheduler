@@ -1,97 +1,90 @@
-// This is free and unencumbered software released into the public domain.
-
-// Anyone is free to copy, modify, publish, use, compile, sell, or
-// distribute this software, either in source code form or as a compiled
-// binary, for any purpose, commercial or non-commercial, and by any
-// means.
-
-// In jurisdictions that recognize copyright laws, the author or authors
-// of this software dedicate any and all copyright interest in the
-// software to the public domain. We make this dedication for the benefit
-// of the public at large and to the detriment of our heirs and
-// successors. We intend this dedication to be an overt act of
-// relinquishment in perpetuity of all present and future rights to this
-// software under copyright law.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-// IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-// OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-// OTHER DEALINGS IN THE SOFTWARE.
-
-// For more information, please refer to <http://unlicense.org/>
-
-// C++ implementation of Dmitry Vyukov's non-intrusive lock free unbound MPSC queue
-// http://www.1024cores.net/home/lock-free-algorithms/queues/non-intrusive-mpsc-node-based-queue
-
-#ifndef __MPSC_BOUNDED_QUEUE_INCLUDED__
-#define __MPSC_BOUNDED_QUEUE_INCLUDED__
-
+#pragma once
 #include <atomic>
-#include <assert.h>
+#include <thread>
+#include <optional>
+
+// Multiple-producer, single-consumer ring-buffer queue.
+// Uses reserveWriteIndex for producer-side slot reservation,
+// and commitWriteIndex for visibility to the consumer.
+// Producer: CAS(reserve) -> write -> CAS(commit)
+// Consumer reads only committed slots.
+//
+// Memory ordering:
+//  - Producers publish writes with `release` on commitWriteIndex
+//  - Consumer observes committed writes with `acquire`
+//
+// Invariant: commitWriteIndex >= reserveWriteIndex >= readIndex
+
+const size_t MPSC_QUEUE_CAPACITY = 1024; // must be power of 2
 
 template<typename T>
-class mpsc_queue_t
-{
+class MPSCQueue {
 public:
-    mpsc_queue_t() : _head(new buffer_node_t), _tail(_head.load(std::memory_order_relaxed))
-    {
-        buffer_node_t* front = _head.load(std::memory_order_relaxed);
-        front->next.store(nullptr, std::memory_order_relaxed);
-    }
+    MPSCQueue();
+    ~MPSCQueue();
+    
+    [[nodiscard]] std::optional<T> pop() noexcept;
+    [[nodiscard]] bool push(const T& msg) noexcept;
+private:
+    static constexpr size_t capacity = MPSC_QUEUE_CAPACITY;
+    static constexpr size_t maxIndexMask = capacity -1;
+    
+    alignas(64) std::atomic<size_t> readIndex{0};
+    alignas(64) std::atomic<size_t> commitWriteIndex{0};
+    alignas(64) std::atomic<size_t> reserveWriteIndex{0};
+    
+    T* buf = nullptr;
+};
 
-    ~mpsc_queue_t()
-    {
-        T output;
-        while (this->dequeue(output)) {}
-        buffer_node_t* front = _head.load(std::memory_order_relaxed);
-        delete front;
-    }
+template<typename T>
+MPSCQueue<T>::MPSCQueue() {
+    static_assert((capacity>0 && ((capacity & (capacity-1)) == 0)),
+                  "MPSCQueue algorithms are optimised for and intended to work only with capacity of power of 2");
+    static_assert(std::atomic<size_t>::is_always_lock_free,
+                  "MPSCQueue requires lock-free atomics for correctness");
+    buf = new T[capacity];
+}
 
-    void enqueue(const T& input)
-    {
-        buffer_node_t* node = new buffer_node_t;
-        node->data = input;
-        node->next.store(nullptr, std::memory_order_relaxed);
+template<typename T>
+MPSCQueue<T>::~MPSCQueue() {
+    delete[] buf;
+}
 
-        buffer_node_t* prev_head = _head.exchange(node, std::memory_order_acq_rel);
-        prev_head->next.store(node, std::memory_order_release);
-    }
+template<typename T>
+bool MPSCQueue<T>::push(const T &msg) noexcept {
+    while (true) {
+        size_t rw = reserveWriteIndex.load(std::memory_order_relaxed);
+        size_t r = readIndex.load(std::memory_order_relaxed);
 
-    bool dequeue(T& output)
-    {
-        buffer_node_t* tail = _tail.load(std::memory_order_relaxed);
-        buffer_node_t* next = tail->next.load(std::memory_order_acquire);
-
-        if (next == nullptr) {
+        if (rw - r == capacity) {
+            // Buffer is full, writer has lapped the reader by full capacity
             return false;
         }
 
-        output = next->data;
-        _tail.store(next, std::memory_order_release);
-        delete tail;
-        return true;
+        if (reserveWriteIndex.compare_exchange_weak(rw, rw+1, std::memory_order_relaxed)) {
+            buf[rw & maxIndexMask] = msg;
+
+            while (!commitWriteIndex.compare_exchange_weak(rw, rw+1, std::memory_order_release, std::memory_order_relaxed)) {
+                std::this_thread::yield();
+            }
+            return true;
+        }
+    }
+}
+
+template<typename T>
+std::optional<T> MPSCQueue<T>::pop() noexcept {
+    size_t r = readIndex.load(std::memory_order_relaxed);
+    size_t cw = commitWriteIndex.load(std::memory_order_acquire);
+
+    if (cw == r) {
+        // buffer empty
+        return std::nullopt;
     }
 
-private:
-    struct buffer_node_t
-    {
-        T                           data;
-        std::atomic<buffer_node_t*> next;
-    };
+    auto msg = buf[r & maxIndexMask];
+    
+    readIndex.store(r+1, std::memory_order_relaxed);
 
-    typedef char cache_line_pad_t[64];
-
-    cache_line_pad_t            _pad0;
-    std::atomic<buffer_node_t*> _head;
-
-    cache_line_pad_t            _pad1;
-    std::atomic<buffer_node_t*> _tail;
-
-    mpsc_queue_t(const mpsc_queue_t&) {}
-    void operator=(const mpsc_queue_t&) {}
-};
-
-#endif
+    return std::make_optional(msg);
+}

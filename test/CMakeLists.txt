@@ -5,9 +5,10 @@ find_package(GTest REQUIRED)
 add_executable(
   3DEngineTest
   main.cpp
+  JobSchedulerTests.cpp
 )
 
-set_property(TARGET 3DEngineTest PROPERTY CXX_STANDARD 17)
+set_property(TARGET 3DEngineTest PROPERTY CXX_STANDARD 20)
 
 if(WIN32)
 target_link_libraries(
@@ -22,4 +23,6 @@ target_link_libraries(
   GTest::gtest_main
 )
 endif()
+
+target_link_libraries(3DEngineTest PRIVATE engine)
 

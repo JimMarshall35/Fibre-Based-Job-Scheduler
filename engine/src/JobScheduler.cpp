@@ -12,6 +12,7 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <time.h> 
 
 // LINUX SPECIFIC END
 
@@ -20,6 +21,12 @@
 #include <string>
 #include <sstream>
 #include <cstdarg>
+#include <cinttypes>
+#include <chrono>
+
+#include <iostream>
+#include <mutex>
+#define TEST_MODE 1
 
 #define LOG_SCHEDULING 1
 namespace Jobs
@@ -28,10 +35,11 @@ namespace Jobs
     class CircularLogBuffer
     {
     public:
-        CircularLogBuffer(size_t size)
+        CircularLogBuffer(size_t size, size_t id)
             :m_pData(new char[size]),
             m_nDataCapacity(size),
-            m_pWrite(m_pData)
+            m_pWrite(m_pData),
+            m_nID(id)
         {}
         ~CircularLogBuffer()
         {
@@ -85,10 +93,28 @@ namespace Jobs
     private:
         void VWritef(const char* pFmt, va_list args)
         {
+            timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            auto now = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
             static char sBuf[1024];
-            int numChars = vsnprintf(sBuf,2048, pFmt, args);
+            const char* idFmt = "[%"PRIu64 "] ";
+            int num = sprintf(sBuf, idFmt, m_nID);
+            const char* timeFmt = "[%" PRIu64 "] " ;
+            num += sprintf(sBuf + num, timeFmt, now);
+
+            int numChars = vsnprintf(sBuf + num,2048, pFmt, args);
+            numChars += num;
             sBuf[numChars++] = '\n';
             sBuf[numChars] = '\0';
+#if TEST_MODE == 1
+            // static std::mutex testPrintMutex;
+            // {
+            //     std::lock_guard<std::mutex> lg(testPrintMutex);
+            //     printf("%s",sBuf);
+            // }
+            printf("%s",sBuf);
+            
+#endif
             Write(sBuf);
         }
     private:
@@ -96,7 +122,7 @@ namespace Jobs
         size_t m_nDataCapacity = 0;
         char* m_pWrite = nullptr;
         size_t m_nSize = 0;
-
+        size_t m_nID = 0;
     };
 
 
@@ -125,12 +151,13 @@ namespace Jobs
     {
         std::atomic<int> value;
 
-        // Wait list of fibers waiting on this counter
-        Fiber* waitListHead;
+        // Wait list of fibSchedulerers waiting on this counter
+        Fiber* waitListHead = nullptr;
+        size_t id = 0;
     };
 
-    using JobQueue = mpsc_queue_t<Job>;
-    using LocalJobQueue = deque::Worker<Fiber*>;
+    using JobQueue = MPSCQueue<Job>;
+    using LocalJobQueue = wsq::BoundedWSQ<Fiber*,10>;
 
     struct JobScheduler;
 
@@ -145,22 +172,23 @@ namespace Jobs
 
     struct WorkerThread
     {
-        WorkerThread(LocalJobQueue& q, deque::Stealer<Fiber*>& stealer, int coreID, struct JobScheduler* pSched)
-            : localQueue(std::move(q)), 
-            myStealer(std::move(stealer)), 
-            pScheduler(pSched), 
+        WorkerThread(int coreID, struct JobScheduler* pSched)
+            :pScheduler(pSched), 
             state(WorkerThreadState::Unstarted),
-            logBuffer(1024 * 64)
+            logBuffer(1024 * 64, coreID),
+            coreID(coreID)
         {
             pSchedulerFibre = fiberPool.allocate();
+            pSchedulerFibre->pOwner = this;
         }
         LocalJobQueue localQueue;
-        deque::Stealer<Fiber*> myStealer; /* used to allow other worker threads to steal */
+
         ObjectPool<Fiber, 64> fiberPool;
         int coreID;
         std::optional<std::thread> thread = std::nullopt; /* no thread created to begin with*/
         Fiber* pSchedulerFibre;
         Fiber* pActiveJobFibre = nullptr;
+        FibreContext OSThreadCtx;
         struct JobScheduler* pScheduler;
 
         /*
@@ -168,7 +196,7 @@ namespace Jobs
             A fair days work, for a fair days pay, but if they don't process it fast enough "Johnny foreigner" will get there first
             and steal the jobs from right out of their local job queue.
         */
-        std::vector<deque::Stealer<Fiber*>> myVictims;
+        std::vector<LocalJobQueue*> myVictims;
 
         JobQueue highPriority;
         JobQueue mediumPriority;
@@ -180,50 +208,65 @@ namespace Jobs
     void JobWrapper(ExecuteFn execute, void* pUser, Counter* pCounter, WorkerThread* pThread)
     {
         pThread->state = WorkerThreadState::Active;
-
+        //pThread->logBuffer.Writef("thread %zu in state Active", pThread);
         // do work
         execute(pUser, pThread);
 
         // decrement counter
         auto v = pCounter->value.fetch_sub(1);
+#ifdef LOG_SCHEDULING
+        pThread->logBuffer.Writef("decrementing counter %zu. old value: %i", pCounter->id, v);
+#endif
         if(v == 1)
         {
             Fiber* h = pCounter->waitListHead;
-            while(h)
+            while(h) 
             {
-                pThread->localQueue.push(h);
+#ifdef LOG_SCHEDULING
+                pThread->logBuffer.Writef("removing fibre %zu from waitlist", h->id);
+#endif
+
+                while(!pThread->localQueue.try_push(h))
+                {
+                }
+                pCounter->waitListHead = pCounter->waitListHead->nextWaiter;
+                h = pCounter->waitListHead;
             }
         }
         pThread->state = WorkerThreadState::Finished;
+        FibreContext c;
+        FibreSwitch(&c, &pThread->pSchedulerFibre->ctx);
     }
 
     void ScheduleWorker(WorkerThread* pThread)
     {
+        std::cout << "started "<< pThread<< "\n";
         pThread->state = WorkerThreadState::Idle;
         while (gWorkersContinue.load())
         {
-            auto job = pThread->localQueue.pop();
-            Job j;
+            Fiber* job = pThread->localQueue.pop();
+            std::optional<Job> j;
             bool bNewJobDequeued = false;
             JobPriority prioritydequeued = JobPriority::Undefined; // only used for logging
-            if(job != std::nullopt)
+            if(job)
             {
 #ifdef LOG_SCHEDULING
-                pThread->logBuffer.Writef("(scheduling fiber) scheduling fibre %i from local queue", job.value()->id);
+                pThread->logBuffer.Writef("scheduling fibre %i from local queue", job->id);
 #endif
-                FibreSwitch(&pThread->pSchedulerFibre->ctx, &job.value()->ctx);
+                pThread->pActiveJobFibre = job;
+                FibreSwitch(&pThread->pSchedulerFibre->ctx, &job->ctx);
             }
-            else if (pThread->highPriority.dequeue(j))
+            else if (j = pThread->highPriority.pop())
             {
                 prioritydequeued = JobPriority::High;
                 bNewJobDequeued = true;
             }
-            else if (pThread->mediumPriority.dequeue(j))
+            else if (j = pThread->mediumPriority.pop())
             {
                 prioritydequeued = JobPriority::Medium;
                 bNewJobDequeued = true;
             }
-            else if (pThread->lowPriority.dequeue(j))
+            else if (j = pThread->lowPriority.pop())
             {
                 prioritydequeued = JobPriority::Low;
                 bNewJobDequeued = true;
@@ -232,34 +275,54 @@ namespace Jobs
             {
                 for(auto& victim : pThread->myVictims)
                 {
-                    auto job = victim.steal();
-                    if(job != std::nullopt)
+                    if(gWorkersContinue) continue;
+
+                    Fiber* job = victim->steal();
+                    if(job != nullptr)
                     {
-                        FibreSwitch(&pThread->pSchedulerFibre->ctx, &job.value()->ctx);
+#ifdef LOG_SCHEDULING
+                        pThread->logBuffer.Writef("stealing fiber %i ", job->id);
+#endif
+                        pThread->pActiveJobFibre = job;
+                        FibreSwitch(&pThread->pSchedulerFibre->ctx, &pThread->pActiveJobFibre->ctx);
                     }
                 }
             }
             if(bNewJobDequeued)
             {
                 Fiber* pF = pThread->fiberPool.allocate();
+                pF->pOwner = pThread;
                 pThread->pActiveJobFibre = pF;
                 ResetFibreStack(pF);
-                LoadNewJobIntoFiber(&pF->ctx, j.execute, j.userData, &JobWrapper, j.counter, pThread);
+                LoadNewJobIntoFiber(&pF->ctx, j.value().execute, j.value().userData, &JobWrapper, j.value().counter, pThread);
+#ifdef LOG_SCHEDULING
+
+                pThread->logBuffer.Writef("new job dequeued %p with user data %p onto fiber %i with priority %s pF %p", 
+                    j.value().execute, j.value().userData, pF->id, gJobPriorityEnumNames[static_cast<size_t>(prioritydequeued)], pF
+                );
+#endif
                 FibreSwitchNewJob(&pThread->pSchedulerFibre->ctx, &pF->ctx);
             }
-            if(pThread->state == WorkerThreadState::Finished)
+            if(pThread->state == WorkerThreadState::Finished && pThread->pActiveJobFibre && pThread->pActiveJobFibre->pOwner == pThread)
             {
+#ifdef LOG_SCHEDULING
+                //pThread->logBuffer.Writef("deallocating fibre %i", pThread->pActiveJobFibre->id);
+#endif
                 pThread->fiberPool.deallocate(pThread->pActiveJobFibre);
+                pThread->state = WorkerThreadState::Idle;
+            }
+            if(pThread->state == WorkerThreadState::Waiting)
+            {
+                pThread->pActiveJobFibre = nullptr;
             }
         }
 #ifdef LOG_SCHEDULING
-        std::stringstream ss;
-        ss << "worker_thread_log_";
-        ss << pThread->coreID;
-        ss << ".txt";
-        auto s = ss.str();
-        pThread->logBuffer.WriteToFile(s.c_str());
+        char buf[267];
+        sprintf(buf, "worker_thread_log_%i.txt", pThread->coreID);
+        pThread->logBuffer.WriteToFile(buf);
 #endif
+        FibreContext old;
+        FibreSwitch(&old, &pThread->OSThreadCtx);
     }
 
     struct JobScheduler
@@ -279,8 +342,8 @@ namespace Jobs
         // create worker thread objects
         for(int i=0; i<numWorkers; i++)
         {
-            auto pair = deque::deque<Fiber*>();
-            gJobScheduler.workers[i] = new WorkerThread(pair.first, pair.second, i, &gJobScheduler);
+            gJobScheduler.workers[i] = new WorkerThread(i, &gJobScheduler);
+            std::cout << "created thread object " << gJobScheduler.workers[i] << "\n";
         }
 
         // populate each threads theft victim array
@@ -293,14 +356,14 @@ namespace Jobs
                 {
                     continue;
                 }
-                thread.myVictims.push_back(gJobScheduler.workers[j]->myStealer);
+                thread.myVictims.push_back(&gJobScheduler.workers[j]->localQueue);
             }
         }
 
         // start an actual thread for each thread object
         for(int i=0; i<numWorkers; i++)
         {
-            gJobScheduler.workers[i]->thread = std::thread([&](){
+            gJobScheduler.workers[i]->thread = std::thread([i](){
                 /*
                     pin to core.
                     The naughty dog presentation said if you don't do this, when an OS thread gets scheduled,
@@ -308,11 +371,10 @@ namespace Jobs
                     thread core as they have used a lot of cpu time, evicting that worker thread and causing a ripple effect.
                 */
                 PinThreadToCore(i);
-                gJobScheduler.workers[i]->pSchedulerFibre->ctx.rdi = reinterpret_cast<uint64_t>(&gJobScheduler.workers[i]);
+                gJobScheduler.workers[i]->pSchedulerFibre->ctx.rdi = reinterpret_cast<uint64_t>(gJobScheduler.workers[i]);
                 gJobScheduler.workers[i]->pSchedulerFibre->ctx.rip = reinterpret_cast<uint64_t>(&ScheduleWorker);
                 ResetFibreStack(gJobScheduler.workers[i]->pSchedulerFibre);
-                FibreContext old;
-                FibreSwitchNewJob(&old, &gJobScheduler.workers[i]->pSchedulerFibre->ctx);
+                FibreSwitchNewJob(&gJobScheduler.workers[i]->OSThreadCtx, &gJobScheduler.workers[i]->pSchedulerFibre->ctx);
             });
 
         }
@@ -324,17 +386,18 @@ namespace Jobs
         // cycle through worker threads, each one gets its turn to be assigned
         // jobs by this global function
         int i = sCounter.fetch_add(1) % gJobScheduler.workers.size(); 
+        printf("Running job on worker %i\n", i);
         pDecl->job.counter = pCounter;
         switch (pDecl->priority)
         {
         case JobPriority::High:
-            gJobScheduler.workers[i]->highPriority.enqueue(pDecl->job);
+            gJobScheduler.workers[i]->highPriority.push(pDecl->job);
             break;
         case JobPriority::Medium:
-            gJobScheduler.workers[i]->mediumPriority.enqueue(pDecl->job);
+            gJobScheduler.workers[i]->mediumPriority.push(pDecl->job);
             break;
         case JobPriority::Low:
-            gJobScheduler.workers[i]->lowPriority.enqueue(pDecl->job);
+            gJobScheduler.workers[i]->lowPriority.push(pDecl->job);
             break;
         }
     }
@@ -342,7 +405,10 @@ namespace Jobs
     Counter* RunJobs(struct JobDecl* pJobs, int numJobs)
     {
         auto pCounter = static_cast<Counter*>(FrameAllocator::Allocate(sizeof(Counter)));
-        pCounter->value.store(0);
+        static size_t sID = 1;
+        pCounter->id = sID++;
+        pCounter->value.store(numJobs);
+        
         pCounter->waitListHead = nullptr;
         for(int i=0; i<numJobs; i++)
         {
@@ -363,9 +429,21 @@ namespace Jobs
         }
         pCtr->waitListHead = pThisThread->pActiveJobFibre;
 #ifdef LOG_SCHEDULING
-        pThisThread->logBuffer.Writef("Fiber [%i] waiting\n");
+        pThisThread->logBuffer.Writef("Fiber %zu waiting for counter %zu\n", pThisThread->pActiveJobFibre->id, pCtr->id);
 #endif
         FibreSwitch(&pThisThread->pActiveJobFibre->ctx, &pThisThread->pSchedulerFibre->ctx);
+    }
+
+
+    void WaitForCounterOSThread(Counter* pCtr, int sleepMS/* = 0 */)
+    {
+        while(pCtr->value.load() != 0)
+        {
+            if(sleepMS)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleepMS));
+            }
+        }
     }
 
     void KillScheduler()

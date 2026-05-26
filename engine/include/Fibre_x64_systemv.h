@@ -32,8 +32,11 @@ struct FibreContext
     uint64_t rcx;
 };
 
+
+
 struct Fiber
 {
+    Jobs::WorkerThread* pOwner;
     size_t id;
     char* stack;
     FibreContext ctx;
@@ -45,10 +48,7 @@ struct Fiber
         static size_t sId = 0;
         id = sId++;
     }
-    ~Fiber()
-    {
-        delete[] stack;
-    }
+    
 };
 
 extern "C" {

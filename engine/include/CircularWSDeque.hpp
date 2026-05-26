@@ -1,349 +1,483 @@
-/*
-    Taken from https://github.com/ssbl/concurrent-deque .
-    An implementation of https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf
+#pragma once
 
+/**
+@file wsq.hpp
+@brief standalone work-stealing queue implementation extracted from the Taskflow project 
+
+Reference: Vyukov, "Bounded MPMC Queue", 1024cores.net, 2009.
+           Lê et al., "Correct and Efficient Work-Stealing for Weak Memory
+           Models", PPoPP 2013, §push.
 */
 
-#ifndef DEQUE_HPP
-#define DEQUE_HPP
-
 #include <atomic>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
-#include <memory>
+#include <type_traits>
+#include <vector>
 
+#ifndef WSQ_CACHELINE_SIZE
+  #define WSQ_CACHELINE_SIZE 64
+#endif
 
-namespace deque {
+#ifndef WSQ_DEFAULT_BOUNDED_LOG_SIZE
+  #define WSQ_DEFAULT_BOUNDED_LOG_SIZE 8
+#endif
 
-template <typename T>
-class Buffer {
-private:
-  long id_;
-  int log_size;
-  T *segment;
-  Buffer<T> *next;
+#ifndef WSQ_DEFAULT_UNBOUNDED_LOG_SIZE
+  #define WSQ_DEFAULT_UNBOUNDED_LOG_SIZE 10
+#endif
 
-public:
-  Buffer(int ls, long id) {
-    id_ = id;
-    log_size = ls;
-    segment = new T[1 << log_size];
-    next = nullptr;
-  }
+namespace wsq {
 
-  ~Buffer() {
-    delete[] segment;
-  }
-
-  long id() const {
-    return id_;
-  }
-
-  Buffer<T> *next_buffer() {
-    return next;
-  }
-
-  long size() const {
-    return static_cast<long>(1 << log_size);
-  }
-
-  T get(long i) const {
-    return segment[i % size()];
-  }
-
-  void put(long i, T item) {
-    segment[i % size()] = item;
-  }
-
-  Buffer<T> *resize(long b, long t, int delta) {
-    auto buffer = new Buffer<T>(log_size + delta, id_ + 1);
-    for (auto i = t; i < b; ++i)
-      buffer->put(i, get(i));
-    next = buffer;
-    return buffer;
-  }
-};
-
-// A buffer_tls is created for each stealer thread. It is intended to
-// be local to that thread; the reclaimer creates one of these
-// whenever a stealer thread is created.
-struct buffer_tls {
-  // The id of the buffer last used by the thread.
-  std::atomic<long> id_last_used;
-  // If set, we don't check `id_last_used`.
-  std::atomic<bool> was_idle;
-  // The next buffer_tls in the list.
-  buffer_tls *next;
-};
-
-// The reclaimer deals with additions to and cleanup of the
-// `buffer_tls` list.
-class Reclaimer {
-private:
-  std::atomic<buffer_tls *> id_list;
-
-public:
-  Reclaimer() : id_list(nullptr) {
-  }
-
-  ~Reclaimer() {
-    auto head = id_list.load(std::memory_order_relaxed);
-    while (head) {
-      auto reclaimed = head;
-      head = head->next;
-      delete reclaimed;
-    }
-  }
-
-  buffer_tls *get_id_list() {
-    return id_list.load(std::memory_order_relaxed);
-  }
-
-  // Each stealer thread registers before using the deque.
-  buffer_tls *register_thread() {
-    auto tls = new buffer_tls{{0}, {true}, nullptr};
-    tls->next = get_id_list();
-
-    while (!id_list.compare_exchange_weak(tls->next, tls)) {
-      tls->next = id_list;
-    }
-
-    return tls;
-  }
-};
+// ----------------------------------------------------------------------------
+// UnboundedWSQ
+// ----------------------------------------------------------------------------
 
 template <typename T>
-class Deque {
-private:
-  std::atomic<long> top;
-  std::atomic<long> bottom;
-  Buffer<T> *unlinked;
-  static const int log_initial_size = 4;
+class UnboundedWSQ {
 
-public:
-  Reclaimer reclaimer;
-  std::atomic<Buffer<T> *> buffer;
+  struct Array {
 
-  Deque() : top(0), bottom(0), unlinked(), reclaimer(),
-	    buffer(new Buffer<T>(log_initial_size, 0)) {
-  }
+    size_t C;
+    size_t M;
+    std::atomic<T>* S;
 
-  ~Deque() {
-    auto b = buffer.load(std::memory_order_relaxed);
-
-    while (unlinked && unlinked != b) {
-      auto reclaimed = unlinked;
-      unlinked = unlinked->next_buffer();
-      delete reclaimed;
+    explicit Array(size_t c) :
+      C {c},
+      M {c-1},
+      S {new std::atomic<T>[C]} {
     }
 
-    delete b;
-  }
-
-  void push_bottom(const T object) {
-    auto b = bottom.load(std::memory_order_relaxed);
-    auto t = top.load(std::memory_order_acquire);
-    auto a = buffer.load(std::memory_order_relaxed);
-
-    auto size = b - t;
-    if (size >= a->size() - 1) {
-      unlinked = unlinked ? unlinked : a;
-      a = a->resize(b, t, 1);
-      buffer.store(a, std::memory_order_release);
+    ~Array() {
+      delete [] S;
     }
 
-    if (unlinked)
-      reclaim_buffers(a);
+    size_t capacity() const noexcept {
+      return C;
+    }
 
-    a->put(b, object);
-    // This fence ensures that an object isn't stolen before we update
-    // `bottom`.
-    std::atomic_thread_fence(std::memory_order_release);
-    bottom.store(b + 1, std::memory_order_relaxed);
-  }
+    void push(int64_t i, T o) noexcept {
+      S[i & M].store(o, std::memory_order_relaxed);
+    }
 
-  std::optional<T> pop_bottom() {
-    auto b = bottom.load(std::memory_order_relaxed);
-    auto a = buffer.load(std::memory_order_acquire);
+    T pop(int64_t i) noexcept {
+      return S[i & M].load(std::memory_order_relaxed);
+    }
 
-    bottom.store(b - 1, std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    auto t = top.load(std::memory_order_relaxed);
-
-    auto size = b - t;
-    std::optional<T> popped = {};
-
-    if (size <= 0) {
-      // Deque empty: reverse the decrement to bottom.
-      bottom.store(b, std::memory_order_relaxed);
-    } else if (size == 1) {
-      // Race against steals.
-      if (top.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
-                                      std::memory_order_relaxed))
-        popped = a->get(t);
-      bottom.store(b, std::memory_order_relaxed);
-    } else {
-      popped = a->get(b - 1);
-
-      if (size <= a->size() / 3 && size > 1 << log_initial_size) {
-        unlinked = unlinked ? unlinked : a;
-        a = a->resize(b, t, -1);
-        buffer.store(a, std::memory_order_release);
+    Array* resize(int64_t b, int64_t t) {
+      Array* ptr = new Array{2*C};
+      for(int64_t i=t; i!=b; ++i) {
+        ptr->push(i, pop(i));
       }
-
-      if (unlinked)
-        reclaim_buffers(a);
+      return ptr;
     }
 
-    return popped;
-  }
-
-  std::optional<T> steal() {
-    auto t = top.load(std::memory_order_acquire);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    auto b = bottom.load(std::memory_order_acquire);
-
-    int size = b - t;
-    std::optional<T> stolen = {};
-
-    if (size > 0) {
-      auto a = buffer.load(std::memory_order_consume);
-      // Race against other steals and a pop.
-      if (top.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
-                                      std::memory_order_relaxed))
-        stolen = a->get(t);
-    }
-
-    return stolen;
-  }
-
-  // An experimental mechanism to reclaim unlinked buffers. Each
-  // stealer thread keeps track of the id of the buffer it last read
-  // from. We reclaim all buffers with id strictly less than the
-  // minimum of the ids seen by the stealers.
-  //
-  // `new_buffer` points to the current buffer.
-  //
-  // XXX: Ideally we shouldn't need the pointer to the new buffer.
-  void reclaim_buffers(Buffer<T> *new_buffer) {
-    auto min_id = new_buffer->id();
-    auto head = reclaimer.get_id_list();
-
-    while (head) {
-      auto idle = head->was_idle.load(std::memory_order_acquire);
-      if (!idle) {
-        auto last_used_id = head->id_last_used.load(std::memory_order_relaxed);
-        min_id = std::min(min_id, last_used_id);
+    Array* resize(int64_t b, int64_t t, size_t N) {
+      Array* ptr = new Array{std::bit_ceil(C + N)};
+      for(int64_t i=t; i!=b; ++i) {
+        ptr->push(i, pop(i));
       }
-      head = head->next;
+      return ptr;
     }
+  };
 
-    while (unlinked->id() < min_id) {
-      auto reclaimed = unlinked;
-      unlinked = unlinked->next_buffer();
-      delete reclaimed;
-    }
-  }
-};
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<int64_t> _top;
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<int64_t> _bottom;
 
-template <typename T>
-class Worker {
-private:
-  std::shared_ptr<Deque<T>> deque;
+  // Owner-private cached upper bound on _top.  Never read by thieves.
+  // Because _top is never decremented, the real occupancy can only be
+  // smaller than what is computed using this cached value, so using it
+  // for the overflow check is always safe.
+  int64_t _cached_top {0};
+
+  // _array on its own cache line: avoids false-sharing with _bottom when
+  // thieves load _array (consume) after reading _bottom (acquire).
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<Array*> _array;
+  std::vector<Array*> _garbage;
+
+  Array* _resize_array(Array* a, int64_t b, int64_t t);
+  Array* _resize_array(Array* a, int64_t b, int64_t t, size_t N);
 
 public:
-  explicit Worker(std::shared_ptr<Deque<T>> d) : deque(d) {
-  }
 
-  // Copy constructor.
-  // There can only be one worker end.
-  Worker(const Worker<T> &w) = delete;
+  using value_type = std::conditional_t<std::is_pointer_v<T>, T, std::optional<T>>;
 
-  // Move constructor.
-  Worker(Worker<T> &&w) : deque(std::move(w.deque)) {
-  }
+  explicit UnboundedWSQ(int64_t LogSize = WSQ_DEFAULT_UNBOUNDED_LOG_SIZE);
+  ~UnboundedWSQ();
 
-  ~Worker() {
-  }
+  UnboundedWSQ(const UnboundedWSQ&)            = delete;
+  UnboundedWSQ& operator=(const UnboundedWSQ&) = delete;
 
-  void push(const T item) {
-    deque->push_bottom(item);
-  }
+  bool   empty()    const noexcept;
+  size_t size()     const noexcept;
+  size_t capacity() const noexcept;
 
-  std::optional<T> pop() {
-    return deque->pop_bottom();
-  }
-};
+  void push(T item);
 
-template <typename T>
-class Stealer {
-private:
-  std::shared_ptr<Deque<T>> deque;
-  buffer_tls *buffer_data;
+  template <typename I>
+  void bulk_push(I first, size_t N);
 
-public:
-  explicit Stealer(std::shared_ptr<Deque<T>> d)
-    : deque(d)
-    , buffer_data(deque->reclaimer.register_thread()) {
-  }
+  value_type pop();
+  value_type steal();
+  value_type steal_with_feedback(size_t& num_empty_steals);
 
-  // Copy constructor.
-  //
-  // Used whenever a new stealer thread is created.
-  Stealer(const Stealer<T> &s)
-    : deque(s.deque)
-    , buffer_data(deque->reclaimer.register_thread()) {
-  }
-
-  // Move constructor.
-  //
-  // Used when we're passing the stealer end around in the same
-  // thread.
-  Stealer(Stealer<T> &&s)
-    : deque(std::move(s.deque))
-    , buffer_data(s.buffer_data) {
-  }
-
-  ~Stealer() {
-  }
-
-  std::optional<T> steal() {
-    // We use memory_order_release to synchronize with the read by the
-    // reclaimer. It makes sense, but I'm not absolutely sure about
-    // this.
-    buffer_data->was_idle.store(false, std::memory_order_release);
-    auto stolen = deque->steal();
-    buffer_data->was_idle.store(true, std::memory_order_release);
-
-    // Stealers load the buffer pointer using memory_order_consume.
-    auto b = deque->buffer.load(std::memory_order_consume);
-    buffer_data->id_last_used.store(b->id(), std::memory_order_relaxed);
-
-    return stolen;
+  static constexpr value_type empty_value() noexcept {
+    if constexpr (std::is_pointer_v<T>) return T{nullptr};
+    else                                return std::optional<T>{std::nullopt};
   }
 };
 
-// Create a worker and stealer end for a single deque. The stealer end
-// can be cloned when spawning stealer threads.
-//
-// auto ws = deque::deque<T>();
-// auto worker = std::move(ws.first);
-// auto stealer = std::move(ws.second);
-//
-// std::thread foo([&stealer]() {
-//   auto clone = stealer;
-//   auto work = clone.steal();
-//   /* ... */
-// });
-//
-// foo.join();
-//
-// XXX: Would it be better to create a macro for this?
+// --- UnboundedWSQ implementation ---
+
 template <typename T>
-std::pair<Worker<T>, Stealer<T>> deque() {
-  auto d = std::make_shared<Deque<T>>();
-  return {Worker<T>(d), Stealer<T>(d)};
+UnboundedWSQ<T>::UnboundedWSQ(int64_t LogSize) {
+  _top.store(0, std::memory_order_relaxed);
+  _bottom.store(0, std::memory_order_relaxed);
+  _array.store(new Array{(size_t{1} << LogSize)}, std::memory_order_relaxed);
+  _garbage.reserve(32);
 }
 
-} // namespace deque
+template <typename T>
+UnboundedWSQ<T>::~UnboundedWSQ() {
+  for(auto a : _garbage) delete a;
+  delete _array.load();
+}
 
-#endif // DEQUE_HPP
+template <typename T>
+bool UnboundedWSQ<T>::empty() const noexcept {
+  int64_t t = _top.load(std::memory_order_relaxed);
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  return (b <= t);
+}
+
+template <typename T>
+size_t UnboundedWSQ<T>::size() const noexcept {
+  int64_t t = _top.load(std::memory_order_relaxed);
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  return static_cast<size_t>(b >= t ? b - t : 0);
+}
+
+template <typename T>
+size_t UnboundedWSQ<T>::capacity() const noexcept {
+  return _array.load(std::memory_order_relaxed)->capacity();
+}
+
+template <typename T>
+void UnboundedWSQ<T>::push(T o) {
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  Array*  a = _array.load(std::memory_order_relaxed);
+
+  // Use cached upper bound of _top — avoids cross-core acquire on common path.
+  // Refresh only when cached value suggests the array may be full.
+  if(a->capacity() < static_cast<size_t>(b - _cached_top + 1)) [[unlikely]] {
+    _cached_top = _top.load(std::memory_order_acquire);
+    if(a->capacity() < static_cast<size_t>(b - _cached_top + 1)) [[unlikely]] {
+      a = _resize_array(a, b, _cached_top);
+    }
+  }
+
+  a->push(b, o);
+  std::atomic_thread_fence(std::memory_order_release);
+  _bottom.store(b + 1, std::memory_order_release);
+}
+
+template <typename T>
+template <typename I>
+void UnboundedWSQ<T>::bulk_push(I first, size_t N) {
+  if(N == 0) return;
+
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  Array*  a = _array.load(std::memory_order_relaxed);
+
+  // queue is full with N additional items
+  if((b - _cached_top + N) > a->capacity()) [[unlikely]] {
+    _cached_top = _top.load(std::memory_order_acquire);
+    if((b - _cached_top + N) > a->capacity()) [[unlikely]] {
+      a = _resize_array(a, b, _cached_top, N);
+    }
+  }
+
+  for(size_t i=0; i<N; ++i) {
+    a->push(b++, first[i]);
+  }
+  std::atomic_thread_fence(std::memory_order_release);
+  _bottom.store(b, std::memory_order_release);
+}
+
+template <typename T>
+typename UnboundedWSQ<T>::value_type UnboundedWSQ<T>::pop() {
+
+  int64_t b = _bottom.load(std::memory_order_relaxed) - 1; 
+  Array* a = _array.load(std::memory_order_relaxed);
+  _bottom.store(b, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  
+  int64_t t = _top.load(std::memory_order_relaxed);
+
+  auto item = empty_value();
+
+  if(t <= b) { 
+    item = a->pop(b);
+    if(t == b) {
+      // the last item just got stolen
+      if(!_top.compare_exchange_strong(t, t + 1,
+                                       std::memory_order_seq_cst,
+                                       std::memory_order_relaxed)) {
+        item = empty_value();
+      }
+      _bottom.store(b + 1, std::memory_order_relaxed);
+    }
+  }
+  else {
+    _bottom.store(b + 1, std::memory_order_relaxed);
+  }
+
+  return item;
+}
+
+template <typename T>
+typename UnboundedWSQ<T>::value_type UnboundedWSQ<T>::steal() {
+  int64_t t = _top.load(std::memory_order_acquire);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  int64_t b = _bottom.load(std::memory_order_acquire);
+
+  auto item = empty_value();
+
+  if(t < b) {
+    Array* a = _array.load(std::memory_order_consume);
+    item = a->pop(t);
+    if(!_top.compare_exchange_strong(t, t+1,
+          std::memory_order_seq_cst, std::memory_order_relaxed)) {
+      return empty_value();
+    }
+  }
+
+  return item;
+}
+
+template <typename T>
+typename UnboundedWSQ<T>::value_type
+UnboundedWSQ<T>::steal_with_feedback(size_t& num_empty_steals) {
+  int64_t t = _top.load(std::memory_order_acquire);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  int64_t b = _bottom.load(std::memory_order_acquire);
+
+  auto item = empty_value();
+
+  if(t < b) {
+    num_empty_steals = 0;
+    Array* a = _array.load(std::memory_order_consume);
+    item = a->pop(t);
+    if(!_top.compare_exchange_strong(t, t+1,
+          std::memory_order_seq_cst, std::memory_order_relaxed)) {
+      return empty_value();
+    }
+  }
+  else {
+    ++num_empty_steals;
+  }
+
+  return item;
+}
+
+template <typename T>
+typename UnboundedWSQ<T>::Array*
+UnboundedWSQ<T>::_resize_array(Array* a, int64_t b, int64_t t) {
+  Array* tmp = a->resize(b, t);
+  _garbage.push_back(a);
+  _array.store(tmp, std::memory_order_release);
+  return tmp;
+}
+
+template <typename T>
+typename UnboundedWSQ<T>::Array*
+UnboundedWSQ<T>::_resize_array(Array* a, int64_t b, int64_t t, size_t N) {
+  Array* tmp = a->resize(b, t, N);
+  _garbage.push_back(a);
+  _array.store(tmp, std::memory_order_release);
+  return tmp;
+}
+
+// ----------------------------------------------------------------------------
+// BoundedWSQ
+// ----------------------------------------------------------------------------
+
+template <typename T, size_t LogSize = WSQ_DEFAULT_BOUNDED_LOG_SIZE>
+class BoundedWSQ {
+
+  static constexpr size_t BufferSize = size_t{1} << LogSize;
+  static constexpr size_t BufferMask = BufferSize - 1;
+
+  static_assert(BufferSize >= 2 && (BufferSize & BufferMask) == 0);
+
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<int64_t> _top    {0};
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<int64_t> _bottom {0};
+                              int64_t _cached_top {0};
+  alignas(WSQ_CACHELINE_SIZE) std::atomic<T>       _buffer[BufferSize];
+
+public:
+
+  using value_type = std::conditional_t<std::is_pointer_v<T>, T, std::optional<T>>;
+
+  BoundedWSQ()  = default;
+  ~BoundedWSQ() = default;
+
+  BoundedWSQ(const BoundedWSQ&)            = delete;
+  BoundedWSQ& operator=(const BoundedWSQ&) = delete;
+
+  bool   empty()    const noexcept;
+  size_t size()     const noexcept;
+  static constexpr size_t capacity() noexcept { return BufferSize; }
+
+  template <typename O>
+  bool try_push(O&& item);
+
+  template <typename I>
+  size_t try_bulk_push(I first, size_t N);
+
+  value_type pop();
+  value_type steal();
+  value_type steal_with_feedback(size_t& num_empty_steals);
+
+  static constexpr value_type empty_value() noexcept {
+    if constexpr (std::is_pointer_v<T>) return T{nullptr};
+    else                                return std::optional<T>{std::nullopt};
+  }
+};
+
+// --- BoundedWSQ implementation ---
+
+template <typename T, size_t LogSize>
+bool BoundedWSQ<T, LogSize>::empty() const noexcept {
+  int64_t t = _top.load(std::memory_order_relaxed);
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  return b <= t;
+}
+
+template <typename T, size_t LogSize>
+size_t BoundedWSQ<T, LogSize>::size() const noexcept {
+  int64_t t = _top.load(std::memory_order_relaxed);
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+  return static_cast<size_t>(b >= t ? b - t : 0);
+}
+
+template <typename T, size_t LogSize>
+template <typename O>
+bool BoundedWSQ<T, LogSize>::try_push(O&& o) {
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+
+  // Optimistic check using cached _top — no cross-core traffic on common path.
+  // Refresh and re-check before returning false: thieves may have advanced
+  // _top since the last refresh, so the queue may have room.
+  if(static_cast<size_t>(b - _cached_top + 1) > BufferSize) {
+    _cached_top = _top.load(std::memory_order_acquire);
+    if(static_cast<size_t>(b - _cached_top + 1) > BufferSize) {
+      return false;
+    }
+  }
+
+  _buffer[b & BufferMask].store(std::forward<O>(o), std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  _bottom.store(b + 1, std::memory_order_release);
+  return true;
+}
+
+template <typename T, size_t LogSize>
+template <typename I>
+size_t BoundedWSQ<T, LogSize>::try_bulk_push(I first, size_t N) {
+  if(N == 0) return 0;
+
+  int64_t b = _bottom.load(std::memory_order_relaxed);
+
+  // Use cached _top for capacity estimate; refresh only when it shows zero room
+  // to avoid returning 0 based on a stale estimate alone.
+  size_t r = BufferSize - static_cast<size_t>(b - _cached_top);
+  if(r == 0) [[unlikely]] {
+    _cached_top = _top.load(std::memory_order_acquire);
+    r = BufferSize - static_cast<size_t>(b - _cached_top);
+  }
+  size_t n = std::min(N, r);
+
+  if(n > 0) {
+    for(size_t i=0; i<n; ++i) {
+      _buffer[b++ & BufferMask].store(first[i], std::memory_order_relaxed);
+    }
+    std::atomic_thread_fence(std::memory_order_release);
+    _bottom.store(b, std::memory_order_release);
+  }
+
+  return n;
+}
+
+template <typename T, size_t LogSize>
+typename BoundedWSQ<T, LogSize>::value_type BoundedWSQ<T, LogSize>::pop() {
+  int64_t b = _bottom.load(std::memory_order_relaxed) - 1;
+  _bottom.store(b, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  int64_t t = _top.load(std::memory_order_relaxed);
+
+  auto item = empty_value();
+
+  if(t <= b) {
+    item = _buffer[b & BufferMask].load(std::memory_order_relaxed);
+    if(t == b) {
+      if(!_top.compare_exchange_strong(t, t+1,
+            std::memory_order_seq_cst, std::memory_order_relaxed)) {
+        item = empty_value();
+      }
+      _bottom.store(b + 1, std::memory_order_relaxed);
+    }
+  }
+  else {
+    _bottom.store(b + 1, std::memory_order_relaxed);
+  }
+
+  return item;
+}
+
+template <typename T, size_t LogSize>
+typename BoundedWSQ<T, LogSize>::value_type BoundedWSQ<T, LogSize>::steal() {
+  int64_t t = _top.load(std::memory_order_acquire);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  int64_t b = _bottom.load(std::memory_order_acquire);
+
+  auto item = empty_value();
+
+  if(t < b) {
+    item = _buffer[t & BufferMask].load(std::memory_order_relaxed);
+    if(!_top.compare_exchange_strong(t, t+1,
+          std::memory_order_seq_cst, std::memory_order_relaxed)) {
+      return empty_value();
+    }
+  }
+
+  return item;
+}
+
+template <typename T, size_t LogSize>
+typename BoundedWSQ<T, LogSize>::value_type
+BoundedWSQ<T, LogSize>::steal_with_feedback(size_t& num_empty_steals) {
+  int64_t t = _top.load(std::memory_order_acquire);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  int64_t b = _bottom.load(std::memory_order_acquire);
+
+  auto item = empty_value();
+
+  if(t < b) {
+    num_empty_steals = 0;
+    item = _buffer[t & BufferMask].load(std::memory_order_relaxed);
+    if(!_top.compare_exchange_strong(t, t+1,
+          std::memory_order_seq_cst, std::memory_order_relaxed)) {
+      return empty_value();
+    }
+  }
+  else {
+    ++num_empty_steals;
+  }
+
+  return item;
+}
+
+}  // namespace wsq

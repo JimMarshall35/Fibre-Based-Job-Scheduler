@@ -8,3 +8,5 @@ target_include_directories(engine PRIVATE
     include
 )
 
+set_property(TARGET engine PROPERTY CXX_STANDARD 20)
+

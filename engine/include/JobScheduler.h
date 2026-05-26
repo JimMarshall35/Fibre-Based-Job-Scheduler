@@ -1,4 +1,5 @@
 #include "Fibre_x64_systemv.h"
+#include <array>
 
 namespace Jobs {
     struct Counter;
@@ -19,7 +20,15 @@ namespace Jobs {
         Undefined,
         High,
         Medium,
-        Low
+        Low,
+        NumberOfPriorities
+    };
+    
+    std::array<const char*, static_cast<size_t>(JobPriority::NumberOfPriorities)> gJobPriorityEnumNames = {
+        "Undefined",
+        "High",
+        "Medium",
+        "Low"
     };
 
     struct JobDecl
@@ -32,4 +41,5 @@ namespace Jobs {
     void KillScheduler();
     void WaitForCounter(WorkerThread* pThisThread, Counter* pCtr);
     Counter* RunJobs(struct JobDecl* pJobs, int numJobs);
+    void WaitForCounterOSThread(Counter* pCtr, int sleepMS=0);
 };
