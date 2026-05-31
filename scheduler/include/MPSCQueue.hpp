@@ -3,6 +3,11 @@
 #include <thread>
 #include <optional>
 
+/*
+    JIM:
+    https://github.com/bowtoyourlord/MPSCQueue/blob/main/MPSCQueue.h
+*/
+
 // Multiple-producer, single-consumer ring-buffer queue.
 // Uses reserveWriteIndex for producer-side slot reservation,
 // and commitWriteIndex for visibility to the consumer.

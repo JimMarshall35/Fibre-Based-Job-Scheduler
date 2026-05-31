@@ -1,5 +1,12 @@
 #pragma once
 
+/*
+  JIM:
+
+  https://github.com/taskflow/work-stealing-queue/tree/master
+
+*/
+
 /**
 @file wsq.hpp
 @brief standalone work-stealing queue implementation extracted from the Taskflow project 
