@@ -8,13 +8,13 @@
 #include <thread>
 #include <optional>
 
-// LINUX SPECIFIC BEGIN
+#if defined(__linux__)
 
 #include <pthread.h>
 #include <sched.h>
 #include <time.h> 
 
-// LINUX SPECIFIC END
+#endif
 
 #include <cstring>
 #include <stdio.h>
