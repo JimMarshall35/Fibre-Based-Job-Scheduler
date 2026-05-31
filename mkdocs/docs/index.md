@@ -10,6 +10,8 @@ It is inherently x64 linux only as context switch code is written in assembly an
 
 When I have access to a windows machine I will make a windows version as well.
 
+The system described in "[Parallelizing the Naughty Dog Engine Using Fibres](https://www.youtube.com/watch?v=HIVBhKj7gQU&t=578s)." seems to be capable of waiting for the counter to reach any aribtrary value, but with mine you can only wait until the counter value is zero. If I think of a use case for the other way I can add that.
+
 ## Lock free queue implementations
 
 Thanks to these github users who's code I have used:
