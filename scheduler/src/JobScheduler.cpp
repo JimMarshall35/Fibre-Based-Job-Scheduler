@@ -243,7 +243,7 @@ namespace Jobs
             Fiber* h = pCounter->waitListHead;
             while(h) 
             {
-                SCHED_LOG(gTLSThread, "removing fibre %zu from waitlist", h->id);
+                SCHED_LOG(gTLSThread, "removing fiber %zu from waitlist", h->id);
 
                 while(!gTLSThread->localQueue.try_push(h))
                 {
@@ -270,7 +270,7 @@ namespace Jobs
             JobPriority prioritydequeued = JobPriority::Undefined; // only used for logging
             if(job)
             {
-                SCHED_LOG(gTLSThread, "scheduling fibre %i from local queue", job->id);
+                SCHED_LOG(gTLSThread, "scheduling fiber %i from local queue", job->id);
                 gTLSThread->pActiveJobFibre = job;
                 FibreSwitch(&gTLSThread->pSchedulerFibre->ctx, &job->ctx);
             }
@@ -332,13 +332,13 @@ namespace Jobs
             }
             if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre->pOwner == gTLSThread)
             {
-                SCHED_LOG(gTLSThread, "deallocating fibre %i", gTLSThread->pActiveJobFibre->id);
+                SCHED_LOG(gTLSThread, "deallocating fiber %i", gTLSThread->pActiveJobFibre->id);
                 gTLSThread->fiberPool.deallocate(gTLSThread->pActiveJobFibre);
                 gTLSThread->state = WorkerThreadState::Idle;
             }
             else if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre->pOwner != gTLSThread)
             {
-                SCHED_LOG(gTLSThread, "NOT deallocating fibre %i", gTLSThread->pActiveJobFibre->id);
+                SCHED_LOG(gTLSThread, "NOT deallocating fiber %i", gTLSThread->pActiveJobFibre->id);
                 gTLSThread->state = WorkerThreadState::Idle;
             }
             if(gTLSThread->state == WorkerThreadState::Waiting)
@@ -469,7 +469,7 @@ namespace Jobs
             return; // counter already done, no need to suspend
         }
 
-        SCHED_LOG(pThisThread, "Fiber %zu waiting for counter %zu", pThisThread->pActiveJobFibre->id, pCtr->id);
+        SCHED_LOG(pThisThread, "fiber %zu waiting for counter %zu", pThisThread->pActiveJobFibre->id, pCtr->id);
         FibreSwitch(&pThisThread->pActiveJobFibre->ctx, &pThisThread->pSchedulerFibre->ctx);
     }
 
