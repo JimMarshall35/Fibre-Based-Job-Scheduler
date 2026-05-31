@@ -19,7 +19,6 @@ jobs:
         id: Deps
         run: |
           sudo apt update
-          sudo apt upgrade
           sudo apt install gtest
           sudo apt install build-essentials
           sudo apt install cmake
