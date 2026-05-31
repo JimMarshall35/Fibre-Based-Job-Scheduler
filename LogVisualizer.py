@@ -118,11 +118,12 @@ def find_run(events: list[SchedulingEvent]) -> tuple:
     e2 = events.pop(0)
     while e2.type != SchedulingEventType.JOB_FINISHED and e2.type != SchedulingEventType.JOB_WAITING:
         e2 = events.pop(0)
+    ms = (e2.rawLine.timestamp - e.rawLine.timestamp) / 1e6
     return (
         e.rawLine.worker,
         e.rawLine.timestamp / 1e6,
-        (e2.rawLine.timestamp - e.rawLine.timestamp) / 1e6,
-        f"{fnName} - {e.fibre}",
+        ms,
+        f"{fnName} - {e.fibre} - {ms} ms",
         get_job_colour(fnName)
 
     )
@@ -135,7 +136,7 @@ def scheduling_events_to_segments(events: list[SchedulingEvent]) -> list[tuple]:
 
 def normalize_by_fiber_timestamps(byFiber: dict[int, list[SchedulingEvent]]) -> None:
     def find_lowest_timestamp(byFiber: dict[int, list[SchedulingEvent]]):
-        ts = 0xFFFFFFFF
+        ts = float('inf')
         for k in byFiber.keys():
             if byFiber[k][0].rawLine.timestamp < ts:
                 ts = byFiber[k][0].rawLine.timestamp
