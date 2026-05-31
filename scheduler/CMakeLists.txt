@@ -1,12 +1,12 @@
-add_library(engine SHARED
+add_library(scheduler SHARED
     src/JobScheduler.cpp
     src/Fibre_x64_systemv.S
     src/Fibre_x64_systemv_c.cpp
     src/FrameAllocator.cpp
 )
-target_include_directories(engine PRIVATE
+target_include_directories(scheduler PRIVATE
     include
 )
 
-set_property(TARGET engine PROPERTY CXX_STANDARD 20)
+set_property(TARGET scheduler PROPERTY CXX_STANDARD 20)
 

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "../engine/include/JobScheduler.h"
-#include "../engine/include/FrameAllocator.h"
+#include "../scheduler/include/JobScheduler.h"
+#include "../scheduler/include/FrameAllocator.h"
 #include <cmath>
 #include <thread>
 #include <chrono>

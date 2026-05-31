@@ -342,7 +342,7 @@ namespace Jobs
                 gTLSThread->state = WorkerThreadState::Idle;
             }
         }
-#ifdef LOG_SCHEDULINGTo
+#ifdef LOG_SCHEDULING
         char buf[267];
         sprintf(buf, "worker_thread_log_%i.txt", gTLSThread->coreID);
         gTLSThread->logBuffer.WriteToFile(buf);
@@ -464,7 +464,7 @@ namespace Jobs
             return; // counter already done, no need to suspend
         }
 
-        SCHED_LOG(pThisThread, "Fiber %zu waiting for counter %zu\n", pThisThread->pActiveJobFibre->id, pCtr->id);
+        SCHED_LOG(pThisThread, "Fiber %zu waiting for counter %zu", pThisThread->pActiveJobFibre->id, pCtr->id);
         FibreSwitch(&pThisThread->pActiveJobFibre->ctx, &pThisThread->pSchedulerFibre->ctx);
     }
 
