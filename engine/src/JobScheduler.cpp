@@ -41,6 +41,8 @@
 namespace Jobs
 {
 
+////////////////////////////////////////////////////////////////////////////////////////// DATA STRUCTURES
+
     class CircularLogBuffer
     {
     public:
@@ -195,16 +197,16 @@ namespace Jobs
         CircularLogBuffer logBuffer;
     };
 
-////////////////////////////////////////////////////////////////////////////////////////// GLOBAL VARS BEGIN
+////////////////////////////////////////////////////////////////////////////////////////// GLOBAL VARS
 
     struct JobScheduler gJobScheduler;
-    thread_local WorkerThread* gTLSThread = nullptr;  // add here
+    thread_local WorkerThread* gTLSThread = nullptr;
 
-////////////////////////////////////////////////////////////////////////////////////////// FUNCTIONS BEGIN
+////////////////////////////////////////////////////////////////////////////////////////// STATIC FUNCTIONS
 
 
 #if defined(__linux__)
-    void PinThreadToCore(int core_id) 
+    static void PinThreadToCore(int core_id) 
     {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
@@ -220,12 +222,12 @@ namespace Jobs
     }
 #endif
 
-    void JobWrapper(ExecuteFn execute, void* pUser, Counter* pCounter, WorkerThread* pThread)
+    static void JobWrapper(ExecuteFn execute, void* pUser, Counter* pCounter)
     {
-        pThread->state = WorkerThreadState::Active;
+        gTLSThread->state = WorkerThreadState::Active;
         //pThread->logBuffer.Writef("thread %zu in state Active", pThread);
         // do work
-        execute(pUser, pThread);
+        execute(pUser, gTLSThread);
 
         // decrement counter
         auto v = pCounter->value.fetch_sub(1);
@@ -250,7 +252,7 @@ namespace Jobs
         FibreSwitch(&c, &gTLSThread->pSchedulerFibre->ctx);
     }
 
-    void ScheduleWorker(WorkerThread* pThread)
+    static void ScheduleWorker(WorkerThread* pThread)
     {
         std::cout << "started "<< pThread<< "\n";
         gTLSThread = pThread;
@@ -331,7 +333,29 @@ namespace Jobs
         FibreSwitch(&old, &gTLSThread->OSThreadCtx);
     }
 
+    static void RunJob(struct JobDecl* pDecl, Counter* pCounter)
+    {
+        static std::atomic<int> sCounter = 0;
+        // cycle through worker threads, each one gets its turn to be assigned
+        // jobs by this global function
+        int i = sCounter.fetch_add(1) % gJobScheduler.workers.size(); 
+        printf("Running job on worker %i\n", i);
+        pDecl->job.counter = pCounter;
+        switch (pDecl->priority)
+        {
+        case JobPriority::High:
+            gJobScheduler.workers[i]->highPriority.push(pDecl->job);
+            break;
+        case JobPriority::Medium:
+            gJobScheduler.workers[i]->mediumPriority.push(pDecl->job);
+            break;
+        case JobPriority::Low:
+            gJobScheduler.workers[i]->lowPriority.push(pDecl->job);
+            break;
+        }
+    }
 
+////////////////////////////////////////////////////////////////////////////////////////// PUBLIC FUNCTIONS
 
     void InitScheduler()
     {
@@ -378,28 +402,6 @@ namespace Jobs
                 FibreSwitchNewJob(&gJobScheduler.workers[i]->OSThreadCtx, &gJobScheduler.workers[i]->pSchedulerFibre->ctx);
             });
 
-        }
-    }
-
-    void RunJob(struct JobDecl* pDecl, Counter* pCounter)
-    {
-        static std::atomic<int> sCounter = 0;
-        // cycle through worker threads, each one gets its turn to be assigned
-        // jobs by this global function
-        int i = sCounter.fetch_add(1) % gJobScheduler.workers.size(); 
-        printf("Running job on worker %i\n", i);
-        pDecl->job.counter = pCounter;
-        switch (pDecl->priority)
-        {
-        case JobPriority::High:
-            gJobScheduler.workers[i]->highPriority.push(pDecl->job);
-            break;
-        case JobPriority::Medium:
-            gJobScheduler.workers[i]->mediumPriority.push(pDecl->job);
-            break;
-        case JobPriority::Low:
-            gJobScheduler.workers[i]->lowPriority.push(pDecl->job);
-            break;
         }
     }
 

@@ -102,8 +102,6 @@ TEST(Scheduler, Basic)
     FrameAllocator::Init(1024 * 100);
     FrameAllocator::BeginFrame();
     Jobs::InitScheduler();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
     Jobs::JobDecl d = {
         Jobs::JobPriority::High,
         {
@@ -115,9 +113,6 @@ TEST(Scheduler, Basic)
     };
     Jobs::Counter* pCtr = Jobs::RunJobs(&d, 1);
     Jobs::WaitForCounterOSThread(pCtr, 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000 * 2));
     Jobs::KillScheduler();
-    
-
     FrameAllocator::DeInit();
 }

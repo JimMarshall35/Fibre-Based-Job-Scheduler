@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <cstddef>
+#include <atomic>
 #define FiberStackSize (1024 * 64)
 
 struct Job;
@@ -12,7 +13,7 @@ namespace Jobs
 
 typedef void (*ExecuteFn)(void*, Jobs::WorkerThread*);
 
-typedef void (*JobWrapperFn)(ExecuteFn, void* pUser, Jobs::Counter* pCounter, Jobs::WorkerThread*);
+typedef void (*JobWrapperFn)(ExecuteFn, void* pUser, Jobs::Counter* pCounter);
 
 struct FibreContext
 {
@@ -45,8 +46,8 @@ struct Fiber
     Fiber()
         :stack(new char[FiberStackSize])
     {
-        static size_t sId = 0;
-        id = sId++;
+        static std::atomic<size_t> sId = 0;
+        id = sId.fetch_add(1);
     }
     
 };
