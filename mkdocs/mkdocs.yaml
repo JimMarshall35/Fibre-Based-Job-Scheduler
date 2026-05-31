@@ -1,0 +1,13 @@
+site_name: Task Tree
+
+plugins:
+  - search
+  - excalidraw
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Architecture: architecture.md
+  - API: API.md
+theme:
+  name: material

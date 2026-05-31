@@ -115,8 +115,12 @@ TEST(Scheduler, Basic)
             nullptr
         }
     };
+    auto start = std::chrono::high_resolution_clock::now();
     Jobs::Counter* pCtr = Jobs::RunJobs(&d, 1);
     Jobs::WaitForCounterOSThread(pCtr, 0);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = end - start;
+    std::cout << "Time taken: " << duration.count() << " ms\n";
     Jobs::KillScheduler();
     FrameAllocator::DeInit();
 }

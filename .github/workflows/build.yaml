@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  # Build job
+  build:
+    # Specify runner +  build & upload the static files as an artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install Build Deps
+        id: Deps
+        run: |
+          sudo apt update
+          sudo apt upgrade
+          sudo apt install gtest
+          sudo apt install build-essentials
+          sudo apt install cmake
+      - name: Build
+        id: build
+        run: |
+          mkdir ./build
+          cd build
+          cmake ..
+          make
+      - name: Test
+        id: Test
+        run: |
+          
+      - name: Upload static files as artifact
+        id: deployment
+        uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
+        with:
+          path: ./build

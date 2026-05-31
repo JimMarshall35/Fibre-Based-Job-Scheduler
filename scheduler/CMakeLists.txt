@@ -4,7 +4,7 @@ add_library(scheduler SHARED
     src/Fibre_x64_systemv_c.cpp
     src/FrameAllocator.cpp
 )
-target_include_directories(scheduler PRIVATE
+target_include_directories(scheduler PUBLIC
     include
 )
 
