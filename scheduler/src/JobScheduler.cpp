@@ -30,7 +30,7 @@
 
 #include <iostream>
 #include <mutex>
-#define TEST_MODE 1
+#define TEST_MODE 0
 
 #define LOG_SCHEDULING 1
 
@@ -330,10 +330,15 @@ namespace Jobs
 #endif
                 FibreSwitchNewJob(&gTLSThread->pSchedulerFibre->ctx, &pF->ctx);
             }
-            if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre && gTLSThread->pActiveJobFibre->pOwner == gTLSThread)
+            if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre->pOwner == gTLSThread)
             {
                 SCHED_LOG(gTLSThread, "deallocating fibre %i", gTLSThread->pActiveJobFibre->id);
                 gTLSThread->fiberPool.deallocate(gTLSThread->pActiveJobFibre);
+                gTLSThread->state = WorkerThreadState::Idle;
+            }
+            else if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre->pOwner != gTLSThread)
+            {
+                SCHED_LOG(gTLSThread, "NOT deallocating fibre %i", gTLSThread->pActiveJobFibre->id);
                 gTLSThread->state = WorkerThreadState::Idle;
             }
             if(gTLSThread->state == WorkerThreadState::Waiting)
