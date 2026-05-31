@@ -31,9 +31,8 @@ FibreSwitch:
     
     # Push the new return address to the new stack so `ret` jumps to new %rip
     movq 56(%rsi), %rax
+    subq $8, %rsp
     pushq %rax
-    pushq %rax # stack has to be 16 byte aligned at the point of a call instruction
-               # so here we push 2 qwords instead of one
 
     ret
 
@@ -74,8 +73,9 @@ FibreSwitchNewJob:
 
     # Push the new return address to the new stack so `ret` jumps to new %rip
     movq 56(%rsi), %rax
+    subq $8, %rsp
     pushq %rax
-    pushq %rax # so here we push 2 qwords instead of one
+    
     
     movq 72(%rsi), %rsi
     ret
