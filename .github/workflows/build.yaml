@@ -19,8 +19,8 @@ jobs:
         id: Deps
         run: |
           sudo apt update
-          sudo apt install gtest
-          sudo apt install build-essentials
+          sudo apt install googletest
+          sudo apt install build-essential
           sudo apt install cmake
       - name: Build
         id: build
