@@ -7,11 +7,11 @@ permissions:
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths:
       - 'docs/**'
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths:
       - 'docs/**'
 
