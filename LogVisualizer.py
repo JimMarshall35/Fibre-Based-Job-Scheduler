@@ -7,6 +7,7 @@ import json
 from collections import defaultdict
 from dataclasses import asdict
 import argparse
+import random
 
 class SchedulingEventType(Enum):
     JOB_BEGUN = 1
@@ -86,6 +87,65 @@ def do_args():
     args = parser.parse_args()
     return args
 
+fnName = ""
+
+names: dict[str, tuple] = dict()
+
+def random_colour() -> tuple:
+    return (random.random(), random.random(), random.random())
+
+def get_job_colour(name: str) -> tuple:
+    """
+        returns an (r, g, b) tuple for each function name
+    """
+    global names
+    if name in names:
+        return names[name]
+    names[name] = random_colour()
+    return names[name]
+
+def find_run(events: list[SchedulingEvent]) -> tuple:
+    """
+        returns this tuple: (thread_id, start, duration, label, color)
+    """
+    global fnName
+    e = events.pop(0)
+    while e.type != SchedulingEventType.JOB_BEGUN and e.type != SchedulingEventType.JOB_RESUMED:
+        e = events.pop(0)
+    if e.type == SchedulingEventType.JOB_BEGUN:
+        fnName = e.name
+        pass
+    e2 = events.pop(0)
+    while e2.type != SchedulingEventType.JOB_FINISHED and e2.type != SchedulingEventType.JOB_WAITING:
+        e2 = events.pop(0)
+    return (
+        e.rawLine.worker,
+        e.rawLine.timestamp / 1e6,
+        (e2.rawLine.timestamp - e.rawLine.timestamp) / 1e6,
+        f"{fnName} - {e.fibre}",
+        get_job_colour(fnName)
+
+    )
+
+def scheduling_events_to_segments(events: list[SchedulingEvent]) -> list[tuple]:
+    r = []
+    while len(events) > 0:
+        r.append(find_run(events))
+    return r
+
+def normalize_by_fiber_timestamps(byFiber: dict[int, list[SchedulingEvent]]) -> None:
+    def find_lowest_timestamp(byFiber: dict[int, list[SchedulingEvent]]):
+        ts = 0xFFFFFFFF
+        for k in byFiber.keys():
+            if byFiber[k][0].rawLine.timestamp < ts:
+                ts = byFiber[k][0].rawLine.timestamp
+        return ts
+    lowest = find_lowest_timestamp(byFiber)
+    for k in byFiber.keys():
+        v = byFiber[k]
+        for e in v:
+            e.rawLine.timestamp = e.rawLine.timestamp - lowest
+    pass    
 
 def main():
     args = do_args()
@@ -106,6 +166,7 @@ def main():
     for k in byFiber.keys():
         byFiber[k].sort(key=lambda obj: obj.rawLine.timestamp)
 
+    normalize_by_fiber_timestamps(byFiber)
     if args.dump_json:
         serializable = {
             str(k): [event.to_serializable() for event in v]
@@ -113,17 +174,11 @@ def main():
         }
         print(json.dumps(serializable, indent=4))
         return
-
-    # (thread_id, start, duration, label, color)
-    segments = [
-        (0, 0, 5,  "A", "tab:blue"),
-        (0, 6, 3,  "B", "tab:orange"),
-        (0, 10, 7, "C", "tab:green"),
-
-        (1, 1, 4,  "D", "tab:red"),
-        (1, 6, 5,  "E", "tab:purple"),
-        (1, 12, 6, "F", "tab:brown"),
-    ]
+    
+    segments = []
+    for k in byFiber.keys():
+        v = byFiber[k]
+        segments += scheduling_events_to_segments(v)
 
     fig, ax = plt.subplots()
 
@@ -143,7 +198,7 @@ def main():
 
         # label inside each bar
         ax.text(
-            start + 0.2,
+            start,
             y_base + row_height / 2,
             label,
             ha="left",
@@ -154,14 +209,12 @@ def main():
 
     # y-axis labeling (threads)
     ax.set_yticks([
-        row_height / 2,
-        (row_height + gap) + row_height / 2
+        # row_height / 2,
+        # (row_height + gap) + row_height / 2
     ])
-    ax.set_yticklabels(["Thread 0", "Thread 1"])
+    # ax.set_yticklabels(["Thread 0", "Thread 1"])
 
-    ax.set_xlabel("Time")
-    ax.set_ylim(0, 2 * (row_height + gap))
-    ax.set_xlim(0, 20)
+
 
     plt.show()
     pass
