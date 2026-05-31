@@ -34,6 +34,8 @@ void simulate_work_ms(double ms) {
     }
     printf("%s\n", "simulate_work_ms");
 }
+
+extern "C" {
 void ChildTask2(void* pUser, Jobs::WorkerThread* pWorker)
 {
     simulate_work_ms(2);
@@ -95,6 +97,8 @@ void TopLevelTask(void* pUser, Jobs::WorkerThread* pWorker)
     Jobs::Counter* pCounter = Jobs::RunJobs(&decl[0], 3);
     Jobs::WaitForCounter(pWorker, pCounter);
     printf("done\n");
+}
+
 }
 
 TEST(Scheduler, Basic)

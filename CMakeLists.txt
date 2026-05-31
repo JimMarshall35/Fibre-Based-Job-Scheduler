@@ -3,6 +3,7 @@ project(3DEngine)
 project(3DEngine CXX ASM)
 
 set (CMAKE_CXX_STANDARD 20)
+set(CMAKE_ENABLE_EXPORTS ON)
 
 add_subdirectory(engine)
 add_subdirectory(test)

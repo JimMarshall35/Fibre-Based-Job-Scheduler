@@ -14,6 +14,10 @@
 #include <sched.h>
 #include <time.h> 
 
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+
 #endif
 
 #include <cstring>
@@ -30,6 +34,7 @@
 
 #define LOG_SCHEDULING 1
 
+#define LOG_TASK_FUNCTION_NAMES 1
 
 #if LOG_SCHEDULING == 1
 #define SCHED_LOG(pThread, fmt, ...) pThread->logBuffer.Writef(fmt, __VA_ARGS__)
@@ -307,9 +312,22 @@ namespace Jobs
                 ResetFibreStack(pF);
                 LoadNewJobIntoFiber(&pF->ctx, j.value().execute, j.value().userData, &JobWrapper, j.value().counter, pThread);
 
-                SCHED_LOG(gTLSThread, "new job dequeued %p with user data %p onto fiber %i with priority %s pF %p", 
-                    j.value().execute, j.value().userData, pF->id, gJobPriorityEnumNames[static_cast<size_t>(prioritydequeued)], pF
+#if LOG_TASK_FUNCTION_NAMES == 1  
+                /* don't know how computationally expensive this is so keep it optional */
+                Dl_info info;
+                dladdr((const void*)j.value().execute, &info);
+                SCHED_LOG(gTLSThread, "new job dequeued %s with user data %p onto fiber %i with priority %s pF %p", 
+                   info.dli_sname, j.value().userData, pF->id, gJobPriorityEnumNames[static_cast<size_t>(prioritydequeued)], pF
                 );
+#else
+                /* 
+                    print the raw fn pointer, if we log the base address of a module as well we can determine the 
+                    function name after the fact. But different shared libs + exes may be used in the final game.
+                */
+                SCHED_LOG(gTLSThread, "new job dequeued %p with user data %p onto fiber %i with priority %s pF %p", 
+                   j.value().execute, j.value().userData, pF->id, gJobPriorityEnumNames[static_cast<size_t>(prioritydequeued)], pF
+                );
+#endif
                 FibreSwitchNewJob(&gTLSThread->pSchedulerFibre->ctx, &pF->ctx);
             }
             if(gTLSThread->state == WorkerThreadState::Finished && gTLSThread->pActiveJobFibre && gTLSThread->pActiveJobFibre->pOwner == gTLSThread)
@@ -324,7 +342,7 @@ namespace Jobs
                 gTLSThread->state = WorkerThreadState::Idle;
             }
         }
-#ifdef LOG_SCHEDULING
+#ifdef LOG_SCHEDULINGTo
         char buf[267];
         sprintf(buf, "worker_thread_log_%i.txt", gTLSThread->coreID);
         gTLSThread->logBuffer.WriteToFile(buf);
