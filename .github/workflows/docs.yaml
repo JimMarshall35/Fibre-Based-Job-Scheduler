@@ -9,11 +9,11 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'docs/**'
+      - 'mkdocs/**'
   pull_request:
     branches: [ "main" ]
     paths:
-      - 'docs/**'
+      - 'mkdocs/**'
 
 jobs:
   # Build job

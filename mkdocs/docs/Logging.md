@@ -17,3 +17,4 @@ LogVisualizer.py accepts the following arguments:
 
 - `--txt_glob` - glob expression to find log.txt files, defaults to "../worker_thread_*.txt"
 - `--dump_json` - convert the logs into a chronological list of events by fiber and dump as json to stdout
+- `--help` - show help
