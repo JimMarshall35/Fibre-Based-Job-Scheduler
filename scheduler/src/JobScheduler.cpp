@@ -207,6 +207,13 @@ namespace Jobs
     struct JobScheduler gJobScheduler;
     thread_local WorkerThread* gTLSThread = nullptr;
 
+    std::array<const char*, static_cast<size_t>(JobPriority::NumberOfPriorities)> gJobPriorityEnumNames = {
+        "Undefined",
+        "High",
+        "Medium",
+        "Low"
+    };
+    
 ////////////////////////////////////////////////////////////////////////////////////////// STATIC FUNCTIONS
 
 

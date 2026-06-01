@@ -1,3 +1,4 @@
+#pragma once
 #include "Fibre_x64_systemv.h"
 #include <array>
 
@@ -22,13 +23,6 @@ namespace Jobs {
         Medium,
         Low,
         NumberOfPriorities
-    };
-    
-    std::array<const char*, static_cast<size_t>(JobPriority::NumberOfPriorities)> gJobPriorityEnumNames = {
-        "Undefined",
-        "High",
-        "Medium",
-        "Low"
     };
 
     struct JobDecl
