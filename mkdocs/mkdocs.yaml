@@ -9,5 +9,6 @@ nav:
   - Getting Started: getting-started.md
   - Architecture: architecture.md
   - API: API.md
+  - Logging: Logging.md
 theme:
   name: material

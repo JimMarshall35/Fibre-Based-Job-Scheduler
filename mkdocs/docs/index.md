@@ -24,3 +24,4 @@ Thanks to these github users who's code I have used:
 - [Getting Started](getting-started.md)
 - [Architecture](architecture.md)
 - [API](API.md)
+- [Logging](Logging.md)
