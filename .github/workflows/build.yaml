@@ -42,7 +42,7 @@ jobs:
         id: installDeps
         run: |
           sudo apt update
-          sudo apt install matplotlib
+          sudo apt install python3-matplotlib
       - name: Test
         id: Test
         run: |
