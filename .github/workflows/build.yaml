@@ -46,7 +46,7 @@ jobs:
       - name: Visualize Test Logs
         id: Visualize
         run: |
-          python3 ./LogVisualizer.py --out ./mkdocs/docs/diarams/Scheduler.png --txt_glob ./worker_thread_*.txt
+          python3 ./LogVisualizer.py --out ./mkdocs/docs/diarams/Scheduler.png --txt_glob "./worker_thread_*.txt"
       - name: Build static files
         id: build_docs
         run: |
