@@ -387,11 +387,9 @@ namespace Jobs
 
 ////////////////////////////////////////////////////////////////////////////////////////// PUBLIC FUNCTIONS
 
-    void InitScheduler()
+    void InitScheduler(int numWorkers)
     {
         gWorkersContinue.store(true);
-        auto concurr = std::thread::hardware_concurrency();
-        int numWorkers = concurr - 2;
         gJobScheduler.workers.resize(numWorkers); /* game engine will use platform and render threads as well */
         
         // create worker thread objects

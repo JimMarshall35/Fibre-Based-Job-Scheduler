@@ -106,7 +106,7 @@ TEST(Scheduler, Basic)
     // initialize stuff
     FrameAllocator::Init(1024 * 100);
     FrameAllocator::BeginFrame();
-    Jobs::InitScheduler();
+    Jobs::InitScheduler(std::thread::hardware_concurrency());
 
     // setup job
     Jobs::JobDecl d = {

@@ -31,7 +31,7 @@ namespace Jobs {
         Job job;
     };
 
-    void InitScheduler();
+    void InitScheduler(int numWorkers);
     void KillScheduler();
     void WaitForCounter(WorkerThread* pThisThread, Counter* pCtr);
     Counter* RunJobs(struct JobDecl* pJobs, int numJobs);
