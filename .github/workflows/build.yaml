@@ -34,10 +34,6 @@ jobs:
       #   uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
       #   with:
       #     path: ./build
-      - name: Build static files
-        id: build
-        run: |
-              steps:
       - name: Install dependencies
         id: installDeps
         run: |
@@ -52,7 +48,7 @@ jobs:
         run: |
           python3 ./LogVisualizer.py --out ./mkdocs/docs/diarams/Scheduler.png --txt_glob ./worker_thread_*.txt
       - name: Build static files
-        id: build
+        id: build_docs
         run: |
           sudo apt-get install doxygen
           python3 -m venv ./venv
@@ -67,7 +63,6 @@ jobs:
         uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
         with:
           path: ./mkdocs/site
-
   # Deployment job
   deploy:
     environment:
