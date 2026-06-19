@@ -194,7 +194,7 @@ def export_html(segments: list[tuple], out_path: str) -> None:
     )
     fig.update_xaxes(rangeslider_visible=False)  # set True if you also want a slider below the plot
 
-    fig.write_html(out_path, include_plotlyjs="inline", full_html=True)
+    fig.write_html(out_path, include_plotlyjs="cdn", full_html=True)
     print(f"Wrote {out_path}")
 
 def main():
