@@ -1,5 +1,5 @@
 # CI test result
 
-This is a png created by the log visualizer tool of the last CI run.
+A plotly generated html file
 
-![diag](diagrams/Scheduler.png)
+<iframe src="TestLogViewer.html" width="100%" height="100%" style="border:none;"></iframe>

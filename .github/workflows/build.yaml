@@ -34,16 +34,6 @@ jobs:
           cd build
           cmake ..
           make
-      # - name: Upload static files as artifact
-      #   id: deployment
-      #   uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
-      #   with:
-      #     path: ./build
-      - name: Install dependencies
-        id: installDeps
-        run: |
-          sudo apt update
-          sudo apt install python3-matplotlib
       - name: Test
         id: Test
         run: |
@@ -51,7 +41,11 @@ jobs:
       - name: Visualize Test Logs
         id: Visualize
         run: |
-          python3 ./LogVisualizer.py --out ./mkdocs/docs/diagrams/Scheduler.png --txt_glob "./worker_thread_*.txt"
+          python3 -m venv ./venv
+          source ./venv/bin/activate
+          pip install matplotlib
+          pip install plotly
+          python3 ./LogVisualizer.py --html ./mkdocs/docs/TestLogViewer.html --txt_glob "./worker_thread_*.txt"
       - name: Build static files
         id: build_docs
         run: |

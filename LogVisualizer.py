@@ -12,6 +12,7 @@ from dataclasses import asdict
 import argparse
 import random
 
+
 class SchedulingEventType(Enum):
     JOB_BEGUN = 1
     JOB_FINISHED = 2
@@ -85,6 +86,7 @@ def do_args():
                     prog='LogVisualizer.py',
                     description='visualize log files for the fiber scheduler',
                     epilog='Jim Marshall - 2026')
+    parser.add_argument("--html", default=None, help="if set, save plotly html")
     parser.add_argument("--out", default=None, help="if set, save plot to this PNG path instead of showing it interactively")
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--width", type=float, default=20.0, help="figure width in inches (only used with --out)")
@@ -156,6 +158,45 @@ def normalize_by_fiber_timestamps(byFiber: dict[int, list[SchedulingEvent]]) -> 
             e.rawLine.timestamp = e.rawLine.timestamp - lowest
     pass    
 
+def export_html(segments: list[tuple], out_path: str) -> None:
+    import plotly.graph_objects as go
+    row_height = 8
+    gap = 4
+
+    fig = go.Figure()
+
+    for thread_id, start, duration, label, color in segments:
+        y_base = thread_id * (row_height + gap)
+        r, g, b = color
+        rgb_str = f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+        fig.add_trace(go.Bar(
+            x=[duration],
+            y=[y_base + row_height / 2],
+            base=[start],
+            orientation="h",
+            width=row_height,
+            marker=dict(color=rgb_str, line=dict(color="black", width=1)),
+            text=label,
+            textposition="inside",
+            insidetextanchor="start",
+            hovertemplate=f"{label}<br>start: %{{base:.3f}} ms<br>duration: %{{x:.3f}} ms<extra></extra>",
+            showlegend=False,
+        ))
+
+    fig.update_layout(
+        barmode="overlay",
+        bargap=0,
+        xaxis_title="time (ms)",
+        yaxis=dict(showticklabels=False),
+        height=900,
+        title="Fiber Scheduler Trace",
+    )
+    fig.update_xaxes(rangeslider_visible=False)  # set True if you also want a slider below the plot
+
+    fig.write_html(out_path, include_plotlyjs="inline", full_html=True)
+    print(f"Wrote {out_path}")
+
 def main():
     args = do_args()
     files = glob.glob(args.txt_glob)
@@ -188,6 +229,11 @@ def main():
     for k in byFiber.keys():
         v = byFiber[k]
         segments += scheduling_events_to_segments(v)
+
+    if args.html:
+        export_html(segments, args.html)
+        if not args.out:
+            return
 
     fig, ax = plt.subplots(figsize=(args.width, args.height) if args.out else None)
 
