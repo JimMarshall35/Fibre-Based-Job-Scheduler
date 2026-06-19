@@ -29,12 +29,58 @@ jobs:
           cd build
           cmake ..
           make
-      - name: Test
-        id: Test
-        run: |
-          ./build/test/schedulerTest
       - name: Upload static files as artifact
         id: deployment
         uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
         with:
           path: ./build
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Install dependencies
+        id: installDeps
+        run: |
+          sudo apt update
+          sudo apt install matplotlib
+      - name: Test
+        id: Test
+        run: |
+          ./build/test/schedulerTest
+      - name: Visualize Test Logs
+        id: Visualize
+        run: |
+          python3 ./LogVisualizer.py --out ./mkdocs/docs/diarams/Scheduler.png --txt_glob ./worker_thread_*.txt
+  buildDocs:
+    # Specify runner +  build & upload the static files as an artifact
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Build static files
+        id: build
+        run: |
+          sudo apt-get install doxygen
+          python3 -m venv ./venv
+          source ./venv/bin/activate
+          pip install mkdocs
+          pip install mkdocs-material
+          pip install mkdocs-excalidraw
+          cd mkdocs
+          mkdocs build
+      - name: Upload static files as artifact
+        id: deployment
+        uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
+        with:
+          path: ./mkdocs/site
+
+  # Deployment job
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: buildDocs
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

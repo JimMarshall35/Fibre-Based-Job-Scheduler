@@ -87,8 +87,8 @@ void TopLevelTask(void* pUser, Jobs::WorkerThread* pWorker)
         decl[i] = {
             Jobs::JobPriority::Medium,
             {
-                &ChildTask,
-                &num,
+                &ChildTask, // function ptr
+                &num,       // user data
                 nullptr,
                 nullptr
             }
@@ -103,9 +103,12 @@ void TopLevelTask(void* pUser, Jobs::WorkerThread* pWorker)
 
 TEST(Scheduler, Basic)
 {
+    // initialize stuff
     FrameAllocator::Init(1024 * 100);
     FrameAllocator::BeginFrame();
     Jobs::InitScheduler();
+
+    // setup job
     Jobs::JobDecl d = {
         Jobs::JobPriority::High,
         {
@@ -115,12 +118,24 @@ TEST(Scheduler, Basic)
             nullptr
         }
     };
+
+    // start high res stopwatch
     auto start = std::chrono::high_resolution_clock::now();
+    
+    // run jobs
     Jobs::Counter* pCtr = Jobs::RunJobs(&d, 1);
+    
+    // wait for jobs to finish
     Jobs::WaitForCounterOSThread(pCtr, 0);
+
+    // end stopwatch
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
     std::cout << "Time taken: " << duration.count() << " ms\n";
+    
+    // terminate and joind worker threads
     Jobs::KillScheduler();
+
+    // deinit
     FrameAllocator::DeInit();
 }

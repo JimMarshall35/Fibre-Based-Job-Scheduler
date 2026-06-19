@@ -10,5 +10,6 @@ nav:
   - Architecture: architecture.md
   - API: API.md
   - Logging: Logging.md
+  - CI Test: ci-test-result.md
 theme:
   name: material

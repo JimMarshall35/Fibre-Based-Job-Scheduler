@@ -1,55 +1,55 @@
-name: Documentation
+# name: Documentation
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+# permissions:
+#   contents: read
+#   pages: write
+#   id-token: write
 
-on:
-  push:
-    branches: [ "main" ]
-    paths:
-      - 'mkdocs/**'
-  pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'mkdocs/**'
+# on:
+#   push:
+#     branches: [ "main" ]
+#     paths:
+#       - 'mkdocs/**'
+#   pull_request:
+#     branches: [ "main" ]
+#     paths:
+#       - 'mkdocs/**'
 
-jobs:
-  # Build job
-  build:
-    # Specify runner +  build & upload the static files as an artifact
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-      - name: Build static files
-        id: build
-        run: |
-          sudo apt-get install doxygen
-          python3 -m venv ./venv
-          source ./venv/bin/activate
-          pip install mkdocs
-          pip install mkdocs-material
-          pip install mkdocs-excalidraw
-          cd mkdocs
-          mkdocs build
+# jobs:
+#   # Build job
+#   build:
+#     # Specify runner +  build & upload the static files as an artifact
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v5
+#         with:
+#           submodules: recursive
+#       - name: Build static files
+#         id: build
+#         run: |
+#           sudo apt-get install doxygen
+#           python3 -m venv ./venv
+#           source ./venv/bin/activate
+#           pip install mkdocs
+#           pip install mkdocs-material
+#           pip install mkdocs-excalidraw
+#           cd mkdocs
+#           mkdocs build
 
-      - name: Upload static files as artifact
-        id: deployment
-        uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
-        with:
-          path: ./mkdocs/site
+#       - name: Upload static files as artifact
+#         id: deployment
+#         uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
+#         with:
+#           path: ./mkdocs/site
 
-  # Deployment job
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+#   # Deployment job
+#   deploy:
+#     environment:
+#       name: github-pages
+#       url: ${{ steps.deployment.outputs.page_url }}
+#     runs-on: ubuntu-latest
+#     needs: build
+#     steps:
+#       - name: Deploy to GitHub Pages
+#         id: deployment
+#         uses: actions/deploy-pages@v4

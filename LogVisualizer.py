@@ -1,5 +1,8 @@
+import sys
+import matplotlib
+if "--out" in sys.argv:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import glob
 from enum import Enum
 import re
@@ -82,6 +85,11 @@ def do_args():
                     prog='LogVisualizer.py',
                     description='visualize log files for the fiber scheduler',
                     epilog='Jim Marshall - 2026')
+    parser.add_argument("--out", default=None, help="if set, save plot to this PNG path instead of showing it interactively")
+    parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--width", type=float, default=20.0, help="figure width in inches (only used with --out)")
+    parser.add_argument("--height", type=float, default=10.0, help="figure height in inches (only used with --out)")
+
     parser.add_argument("--txt_glob", default="../worker_thread_*.txt")
     parser.add_argument("--dump_json", action="store_true")
     args = parser.parse_args()
@@ -181,7 +189,7 @@ def main():
         v = byFiber[k]
         segments += scheduling_events_to_segments(v)
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(args.width, args.height) if args.out else None)
 
     row_height = 8
     gap = 4
@@ -216,8 +224,12 @@ def main():
     # ax.set_yticklabels(["Thread 0", "Thread 1"])
 
 
-
-    plt.show()
-    pass
+    
+    if args.out:
+        
+        fig.savefig(args.out, dpi=args.dpi, bbox_inches="tight")
+        print(f"Wrote {args.out}")
+    else:
+        plt.show()
 
 main()
